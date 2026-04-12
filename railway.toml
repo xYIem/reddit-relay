@@ -1,6 +1,5 @@
 [build]
-builder = "dockerfile"
+builder = "DOCKERFILE"
 
 [deploy]
 restartPolicyType = "always"
-healthcheckPath = "/health"
