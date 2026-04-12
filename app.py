@@ -106,7 +106,7 @@ def post_comment(post_url: str, comment_text: str) -> dict:
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "user": REDDIT_USERNAME})
+    return jsonify({"status": "ok", "user": REDDIT_USERNAME, "version": "cookies-v2", "has_cookies": bool(os.environ.get("REDDIT_COOKIES"))})
 
 
 @app.route("/whoami")
