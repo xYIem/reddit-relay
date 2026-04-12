@@ -101,6 +101,26 @@ def health():
     return jsonify({"status": "ok", "user": REDDIT_USERNAME})
 
 
+@app.route("/debug-login")
+def debug_login():
+    """Test Reddit login and return raw response — remove after debugging."""
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {RELAY_SECRET}":
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    import requests as req_lib
+    s = req_lib.Session()
+    s.headers.update({"User-Agent": REDDIT_UA})
+    try:
+        r = s.post(
+            f"https://old.reddit.com/api/login/{REDDIT_USERNAME}",
+            data={"user": REDDIT_USERNAME, "passwd": REDDIT_PASSWORD, "api_type": "json", "rem": "true"},
+            timeout=15,
+        )
+        return jsonify({"status": r.status_code, "body": r.text[:500], "cookies": {c.name: c.value for c in s.cookies}})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route("/reply", methods=["POST"])
 def reply():
     # Auth check
