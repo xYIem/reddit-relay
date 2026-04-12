@@ -43,6 +43,7 @@ def get_session() -> requests.Session:
         "rem": "true",
     }, timeout=15)
 
+    print(f"[relay] login status={resp.status_code} body={resp.text[:200]}")
     if resp.status_code != 200:
         raise RuntimeError(f"Reddit login HTTP {resp.status_code}: {resp.text[:300]}")
     try:
@@ -54,7 +55,11 @@ def get_session() -> requests.Session:
         raise RuntimeError(f"Reddit login errors: {errors}")
 
     # Grab modhash for CSRF
-    me = s.get("https://www.reddit.com/api/me.json", timeout=10).json()
+    me_resp = s.get("https://www.reddit.com/api/me.json", timeout=10)
+    print(f"[relay] me.json status={me_resp.status_code} body={me_resp.text[:100]}")
+    if me_resp.status_code != 200:
+        raise RuntimeError(f"me.json HTTP {me_resp.status_code}: {me_resp.text[:200]}")
+    me = me_resp.json()
     modhash = me.get("data", {}).get("modhash", "")
     s.headers.update({"X-Modhash": modhash})
 
