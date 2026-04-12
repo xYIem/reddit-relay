@@ -21,7 +21,7 @@ REDDIT_PASSWORD = os.environ["REDDIT_PASSWORD"]
 REDDIT_UA       = f"YlemRelayBot/1.0 by /u/{REDDIT_USERNAME}"
 
 # ── Session cache ─────────────────────────────────────────────────────────────
-_session: requests.Session | None = None
+_session = None  # requests.Session | None
 _session_expiry: float = 0
 SESSION_TTL = 55 * 60  # 55 min
 
