@@ -1,97 +1,105 @@
 """
 Reddit Reply Relay
 ------------------
-Deployed on Railway (clean IP). Accepts POST /reply from WSL2 agent,
-logs into Reddit via old.reddit.com (no OAuth app needed), posts the comment.
+Deployed on Railway. Accepts POST /reply from WSL2 agent.
+Uses browser cookies extracted from Windows Chrome (REDDIT_COOKIES env var).
+No login needed — cookies persist for ~2 years.
 
-Auth: bearer token in Authorization header (RELAY_SECRET env var).
+Auth: Bearer token in Authorization header (RELAY_SECRET env var).
 """
 
 import os
-import time
+import re
 import json
+import time
 import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 RELAY_SECRET    = os.environ["RELAY_SECRET"]
-REDDIT_USERNAME = os.environ["REDDIT_USERNAME"]
-REDDIT_PASSWORD = os.environ["REDDIT_PASSWORD"]
-REDDIT_UA       = f"YlemRelayBot/1.0 by /u/{REDDIT_USERNAME}"
+REDDIT_USERNAME = os.environ.get("REDDIT_USERNAME", "ylelvl")
+REDDIT_UA       = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-# ── Session cache ─────────────────────────────────────────────────────────────
-_session = None  # requests.Session | None
-_session_expiry: float = 0
-SESSION_TTL = 55 * 60  # 55 min
+# ── Session (built from injected cookies, no login) ───────────────────────────
+_session = None
+_modhash = ""
 
 
-def get_session() -> requests.Session:
-    global _session, _session_expiry
-    if _session and time.time() < _session_expiry:
-        return _session
+def build_session():
+    global _session, _modhash
+    cookies_json = os.environ.get("REDDIT_COOKIES", "")
+    if not cookies_json:
+        raise RuntimeError("REDDIT_COOKIES env var not set")
 
+    cookie_list = json.loads(cookies_json)
     s = requests.Session()
     s.headers.update({"User-Agent": REDDIT_UA})
 
-    # Login via old.reddit.com (plain HTTP form, no OAuth)
-    login_url = f"https://old.reddit.com/api/login/{REDDIT_USERNAME}"
-    resp = s.post(login_url, data={
-        "user": REDDIT_USERNAME,
-        "passwd": REDDIT_PASSWORD,
-        "api_type": "json",
-        "rem": "true",
-    }, timeout=15)
+    for c in cookie_list:
+        s.cookies.set(
+            c["name"], c["value"],
+            domain=c.get("domain", ".reddit.com"),
+            path=c.get("path", "/"),
+        )
 
-    print(f"[relay] login status={resp.status_code} body={resp.text[:200]}")
-    if resp.status_code != 200:
-        raise RuntimeError(f"Reddit login HTTP {resp.status_code}: {resp.text[:300]}")
-    try:
-        body = resp.json()
-    except Exception:
-        raise RuntimeError(f"Reddit login non-JSON response: {resp.text[:300]}")
-    errors = body.get("json", {}).get("errors", [])
-    if errors:
-        raise RuntimeError(f"Reddit login errors: {errors}")
-
-    # Grab modhash for CSRF
-    me_resp = s.get("https://www.reddit.com/api/me.json", timeout=10)
-    print(f"[relay] me.json status={me_resp.status_code} body={me_resp.text[:100]}")
-    if me_resp.status_code != 200:
-        raise RuntimeError(f"me.json HTTP {me_resp.status_code}: {me_resp.text[:200]}")
-    me = me_resp.json()
-    modhash = me.get("data", {}).get("modhash", "")
-    s.headers.update({"X-Modhash": modhash})
+    # Fetch modhash (CSRF token) for comment posting
+    me = s.get("https://www.reddit.com/api/me.json", timeout=15)
+    print(f"[relay] me.json status={me.status_code}")
+    if me.status_code == 200:
+        data = me.json().get("data", {})
+        _modhash = data.get("modhash", "")
+        name = data.get("name", "?")
+        print(f"[relay] Authenticated as: {name}, modhash={_modhash[:8]}...")
+    else:
+        print(f"[relay] me.json failed: {me.text[:200]}")
 
     _session = s
-    _session_expiry = time.time() + SESSION_TTL
-    print(f"[relay] Logged in as {REDDIT_USERNAME}, modhash={modhash[:8]}...")
     return s
 
 
+def get_session():
+    global _session
+    if _session is None:
+        build_session()
+    return _session
+
+
 def post_comment(post_url: str, comment_text: str) -> dict:
-    import re
-    m = re.search(r'/comments/([a-z0-9]+)/', post_url)
+    m = re.search(r'/comments/([a-zA-Z0-9]+)/', post_url)
     if not m:
-        return {"ok": False, "error": "Could not parse post ID from URL"}
+        return {"ok": False, "error": f"Could not parse post ID from URL: {post_url}"}
 
     thing_id = "t3_" + m.group(1)
     s = get_session()
 
-    resp = s.post("https://www.reddit.com/api/comment", data={
-        "thing_id": thing_id,
-        "text": comment_text,
-        "api_type": "json",
-    }, timeout=15)
+    resp = s.post(
+        "https://www.reddit.com/api/comment",
+        data={
+            "thing_id": thing_id,
+            "text": comment_text,
+            "api_type": "json",
+            "uh": _modhash,
+        },
+        headers={"X-Modhash": _modhash},
+        timeout=20,
+    )
 
-    body = resp.json()
+    print(f"[relay] comment POST status={resp.status_code} body={resp.text[:200]}")
+
+    if resp.status_code != 200:
+        return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+
+    try:
+        body = resp.json()
+    except Exception:
+        return {"ok": False, "error": f"Non-JSON response: {resp.text[:200]}"}
+
     errors = body.get("json", {}).get("errors", [])
     if errors:
         return {"ok": False, "error": str(errors)}
-    if resp.status_code != 200:
-        return {"ok": False, "error": f"HTTP {resp.status_code}"}
 
-    return {"ok": True}
+    return {"ok": True, "thing_id": thing_id}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -101,29 +109,22 @@ def health():
     return jsonify({"status": "ok", "user": REDDIT_USERNAME})
 
 
-@app.route("/debug-login")
-def debug_login():
-    """Test Reddit login and return raw response — remove after debugging."""
+@app.route("/whoami")
+def whoami():
+    """Check which Reddit account is authenticated."""
     auth = request.headers.get("Authorization", "")
     if auth != f"Bearer {RELAY_SECRET}":
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    import requests as req_lib
-    s = req_lib.Session()
-    s.headers.update({"User-Agent": REDDIT_UA})
     try:
-        r = s.post(
-            f"https://old.reddit.com/api/login/{REDDIT_USERNAME}",
-            data={"user": REDDIT_USERNAME, "passwd": REDDIT_PASSWORD, "api_type": "json", "rem": "true"},
-            timeout=15,
-        )
-        return jsonify({"status": r.status_code, "body": r.text[:500], "cookies": {c.name: c.value for c in s.cookies}})
+        s = get_session()
+        me = s.get("https://www.reddit.com/api/me.json", timeout=10)
+        return jsonify({"status": me.status_code, "data": me.json().get("data", {})})
     except Exception as e:
         return jsonify({"error": str(e)})
 
 
 @app.route("/reply", methods=["POST"])
 def reply():
-    # Auth check
     auth = request.headers.get("Authorization", "")
     if auth != f"Bearer {RELAY_SECRET}":
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -137,21 +138,11 @@ def reply():
 
     try:
         result = post_comment(post_url, comment_text)
-        status = 200 if result["ok"] else 502
-        return jsonify(result), status
+        return jsonify(result), (200 if result["ok"] else 502)
     except Exception as e:
-        # Session may be stale — invalidate and retry once
-        global _session, _session_expiry
-        _session = None
-        _session_expiry = 0
-        try:
-            result = post_comment(post_url, comment_text)
-            status = 200 if result["ok"] else 502
-            return jsonify(result), status
-        except Exception as e2:
-            return jsonify({"ok": False, "error": str(e2)}), 502
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
