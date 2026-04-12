@@ -43,12 +43,15 @@ def get_session() -> requests.Session:
         "rem": "true",
     }, timeout=15)
 
-    body = resp.json()
+    if resp.status_code != 200:
+        raise RuntimeError(f"Reddit login HTTP {resp.status_code}: {resp.text[:300]}")
+    try:
+        body = resp.json()
+    except Exception:
+        raise RuntimeError(f"Reddit login non-JSON response: {resp.text[:300]}")
     errors = body.get("json", {}).get("errors", [])
     if errors:
         raise RuntimeError(f"Reddit login errors: {errors}")
-    if resp.status_code != 200:
-        raise RuntimeError(f"Reddit login failed: {resp.status_code} {resp.text[:200]}")
 
     # Grab modhash for CSRF
     me = s.get("https://www.reddit.com/api/me.json", timeout=10).json()
