@@ -60,14 +60,15 @@ def build_session() -> requests.Session:
     # Fetch modhash (CSRF token) needed for posting comments
     try:
         me = s.get("https://www.reddit.com/api/me.json", timeout=15)
-        print(f"[relay] me.json status={me.status_code}")
-        if me.status_code == 200:
+        print(f"[relay] me.json status={me.status_code} len={len(me.content)} ct={me.headers.get('content-type','?')}")
+        print(f"[relay] me.json body_start={me.text[:200]}")
+        if me.status_code == 200 and me.text.strip().startswith("{"):
             data = me.json().get("data", {})
             _modhash = data.get("modhash", "")
             name = data.get("name", "?")
             print(f"[relay] Authenticated as: {name}, modhash={_modhash[:8]}...")
         else:
-            print(f"[relay] me.json failed ({me.status_code}): {me.text[:100]}")
+            print(f"[relay] me.json non-JSON response, skipping modhash")
     except Exception as e:
         print(f"[relay] me.json error: {e}")
 
@@ -139,7 +140,13 @@ def whoami():
     try:
         s = get_session()
         me = s.get("https://www.reddit.com/api/me.json", timeout=10)
-        return jsonify({"status": me.status_code, "data": me.json().get("data", {})})
+        return jsonify({
+            "http_status": me.status_code,
+            "content_type": me.headers.get("content-type", "?"),
+            "body_length": len(me.content),
+            "body_start": me.text[:300],
+            "modhash": _modhash[:8] if _modhash else "NOT_SET",
+        })
     except Exception as e:
         return jsonify({"error": str(e)})
 
