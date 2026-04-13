@@ -37,8 +37,15 @@ def build_session():
     s.headers.update({"User-Agent": REDDIT_UA})
 
     for c in cookie_list:
+        # Encode value to latin-1 safe (requests HTTP header requirement)
+        val = c["value"]
+        try:
+            val.encode("latin-1")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            import urllib.parse
+            val = urllib.parse.quote(val, safe="")
         s.cookies.set(
-            c["name"], c["value"],
+            c["name"], val,
             domain=c.get("domain", ".reddit.com"),
             path=c.get("path", "/"),
         )
